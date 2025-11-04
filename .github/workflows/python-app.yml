@@ -1,0 +1,84 @@
+name: Stress Test Website
+
+on:
+  workflow_dispatch:
+    inputs:
+      website_url:
+        description: 'URL website cần test (vd: https://example.com)'
+        required: true
+        type: string
+      stress_level:
+        description: 'Chọn mức độ mạnh'
+        required: true
+        type: choice
+        options:
+          - nhẹ
+          - trung_bình
+          - mạnh
+          - siêu_mạnh
+        default: mạnh
+
+jobs:
+  run-k6:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tạo file k6-script.js (đã fix)
+        run: |
+          URL="${{ inputs.website_url }}"
+          [[ ! "$URL" =~ ^https?:// ]] && URL="https://$URL"
+
+          case "${{ inputs.stress_level }}" in
+            "nhẹ") TARGET=100 ;;
+            "trung_bình") TARGET=500 ;;
+            "mạnh") TARGET=1000 ;;
+            "siêu_mạnh") TARGET=5000 ;;
+          esac
+
+          cat > k6-script.js << EOF
+import http from 'k6/http';
+import { check, sleep } from 'k6';
+import { htmlReport } from 'https://raw.githubusercontent.com/benc-uk/k6-reporter/main/dist/bundle.js';
+import { textSummary } from 'https://jslib.k6.io/k6-summary/0.0.1/index.js';
+
+export let options = {
+  stages: [
+    { duration: '30s', target: $TARGET },
+    { duration: '1m', target: $TARGET },
+    { duration: '30s', target: 0 },
+  ],
+};
+
+export default function () {
+  let res = http.get('$URL');
+  check(res, { 'status 200': (r) => r.status === 200 });
+  sleep(1);
+}
+
+export function handleSummary(data) {
+  return {
+    'report.html': htmlReport(data),
+    'stdout': textSummary(data, { indent: ' ', enableColors: true }),
+  };
+}
+EOF
+          echo "Đã tạo k6-script.js với $TARGET user và URL: $URL"
+
+      - name: Chạy k6
+        uses: grafana/k6-action@v0.3.0
+        with:
+          filename: k6-script.js
+          flags: --out json=results.json
+
+      - name: Tạo báo cáo HTML
+        run: |
+          curl -L https://github.com/benc-uk/k6-reporter/releases/download/v0.2.0/k6-reporter_0.2.0_linux_amd64.tar.gz | tar xz
+          ./k6-reporter -r results.json > report.html || echo "Lỗi tạo báo cáo, nhưng k6 vẫn chạy"
+
+      - name: Upload báo cáo
+        uses: actions/upload-artifact@v4
+        with:
+          name: K6-Stress-Test-Report
+          path: |
+            report.html
+            results.json
+            k6-script.js
